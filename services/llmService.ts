@@ -117,6 +117,9 @@ const askAnthropic = async (prompt: string, model: string): Promise<string> => {
       "Content-Type": "application/json",
       "x-api-key": apiKey,
       "anthropic-version": "2023-06-01",
+      // Required for direct browser-to-Anthropic calls; without it the request
+      // is blocked by CORS. Note this exposes the API key client-side (see README).
+      "anthropic-dangerous-direct-browser-access": "true",
     },
     body: JSON.stringify({
       model,
