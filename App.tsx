@@ -7,14 +7,37 @@ import AgentSidebar from './components/AgentSidebar';
 import { AnalysisStep, ReferenceMethod, SignalConfig, ChannelData } from './types';
 import { generateLFPData } from './services/mockDataService';
 import { parseEDF } from './services/edfService';
-import { computeRealPSD } from './services/dspService';
+import { computeRealPSD, computeBandPower } from './services/dspService';
+import { applyNotch, applyBandpass, applyCAR, applyLaplacian } from './services/filterService';
+
+const SIMULATED_SAMPLE_RATE = 1000;
+
+const BANDPASS_PRESETS: { label: string; range: [number, number] }[] = [
+  { label: 'Wide (0.5–300)', range: [0.5, 300] },
+  { label: 'LFP (1–150)', range: [1, 150] },
+  { label: 'Ripples (80–250)', range: [80, 250] },
+];
+
+// Display styling for the frequency bands defined in constants.ts (FREQ_BANDS).
+const BAND_LABELS: Record<string, string> = {
+  DELTA: 'Delta', THETA: 'Theta', ALPHA: 'Alpha', BETA: 'Beta', GAMMA: 'Gamma', HIGH_GAMMA: 'High Gamma',
+};
+const BAND_STYLES: Record<string, { text: string; bar: string }> = {
+  DELTA: { text: 'text-blue-400', bar: '#60a5fa' },
+  THETA: { text: 'text-cyan-400', bar: '#22d3ee' },
+  ALPHA: { text: 'text-green-400', bar: '#34d399' },
+  BETA: { text: 'text-yellow-500', bar: '#eab308' },
+  GAMMA: { text: 'text-orange-400', bar: '#fb923c' },
+  HIGH_GAMMA: { text: 'text-red-400', bar: '#f87171' },
+};
 
 const App: React.FC = () => {
   const [currentStep, setCurrentStep] = useState<AnalysisStep>(AnalysisStep.PREPROCESSING);
   const [config, setConfig] = useState<SignalConfig>({
-    sampleRate: 1000,
+    sampleRate: SIMULATED_SAMPLE_RATE,
     notchFilter: 0, // Default off
     bandpass: [0.5, 300],
+    bandpassEnabled: false,
     reference: ReferenceMethod.MONOPOLAR
   });
 
@@ -47,9 +70,12 @@ const App: React.FC = () => {
     setErrorMsg(null);
     try {
       if (file.name.toLowerCase().endsWith('.edf')) {
-        const channels = await parseEDF(file);
+        const { channels, sampleRate } = await parseEDF(file);
         setLocalData(channels);
         setDataMode('local');
+        if (sampleRate > 0) {
+          setConfig(c => ({ ...c, sampleRate }));
+        }
         setExcludedChannelIds(new Set()); // Reset exclusions on new file
       } else {
         throw new Error("Unsupported file format. Please use .edf");
@@ -74,44 +100,73 @@ const App: React.FC = () => {
     setExcludedChannelIds(newSet);
   };
 
-  // Processed Data (Apply Re-referencing)
+  // Processed Data: the single place where the signal pipeline is applied to
+  // the time series. Order follows standard montage practice:
+  //   re-reference -> notch (line noise) -> band-pass.
   const processedData = useMemo(() => {
     if (!rawData.length) return [];
-    
-    let data = rawData;
 
-    if (config.reference === ReferenceMethod.BIPOLAR) {
-        // Simple Bipolar Montage: Ch[i] - Ch[i+1]
-        data = rawData.map((ch, idx) => {
-           if (idx < rawData.length - 1) {
-              const nextCh = rawData[idx+1];
-              // Note: If nextCh is excluded, Bipolar might need adjustment, 
-              // but for simplicity we calculate bipolar first, then filter visibility.
-              // Alternatively, standard practice is calculate montage on ALL, then view selected.
-              const newData = ch.data.map((val, t) => val - nextCh.data[t]);
+    const fs = config.sampleRate;
+
+    // 1. Re-referencing
+    let data: ChannelData[];
+    switch (config.reference) {
+      case ReferenceMethod.BIPOLAR:
+        // Sequential bipolar montage: Ch[i] - Ch[i+1]
+        data = rawData
+          .map((ch, idx) => {
+            if (idx < rawData.length - 1) {
+              const nextCh = rawData[idx + 1];
+              const newData = ch.data.map((val, t) => val - (nextCh.data[t] ?? 0));
               return { ...ch, label: `${ch.label}-${nextCh.label}`, data: newData };
-           }
-           return ch;
-        }).slice(0, rawData.length - 1);
+            }
+            return ch;
+          })
+          .slice(0, rawData.length - 1);
+        break;
+      case ReferenceMethod.CAR:
+        data = applyCAR(rawData);
+        break;
+      case ReferenceMethod.LAPLACIAN:
+        data = applyLaplacian(rawData);
+        break;
+      default: // MONOPOLAR
+        data = rawData.map(ch => ({ ...ch, data: ch.data.slice() }));
+    }
+
+    // 2. Notch filter (power-line noise removal)
+    if (config.notchFilter > 0) {
+      data = data.map(ch => ({ ...ch, data: applyNotch(ch.data, fs, config.notchFilter as 50 | 60) }));
+    }
+
+    // 3. Band-pass filter
+    if (config.bandpassEnabled) {
+      const [low, high] = config.bandpass;
+      data = data.map(ch => ({ ...ch, data: applyBandpass(ch.data, fs, low, high) }));
     }
 
     return data;
-  }, [rawData, config.reference]);
+  }, [rawData, config.reference, config.notchFilter, config.bandpassEnabled, config.bandpass, config.sampleRate]);
 
   // Active Data for Visualization/Analysis (Exclude deleted channels)
   const activeData = useMemo(() => {
     return processedData.filter(ch => !excludedChannelIds.has(ch.id));
   }, [processedData, excludedChannelIds]);
 
+  // Representative channel for spectral views (first non-bad active channel).
+  const targetChannel = useMemo(() => {
+    if (activeData.length === 0) return null;
+    return activeData.find(c => !c.isBad) || activeData[0];
+  }, [activeData]);
+
   // PSD Calculation (Based on active data)
   const psdData = useMemo(() => {
-    if (activeData.length === 0) return [];
-    
-    // Pick the first non-bad active channel for the representative PSD
-    const targetCh = activeData.find(c => !c.isBad) || activeData[0];
-    
-    return computeRealPSD(targetCh.data, dataMode === 'local' ? config.sampleRate : 1000);
-  }, [activeData, dataMode, config.sampleRate]);
+    if (!targetChannel) return [];
+    return computeRealPSD(targetChannel.data, config.sampleRate);
+  }, [targetChannel, config.sampleRate]);
+
+  // Band power per frequency band, derived from the PSD.
+  const bandPower = useMemo(() => computeBandPower(psdData), [psdData]);
 
   // Context for Gemini
   const contextData = useMemo(() => {
@@ -150,7 +205,7 @@ const App: React.FC = () => {
                     <div className="flex flex-col gap-2">
                        <div className="flex rounded-md bg-gray-900 p-1 border border-gray-700">
                           <button 
-                            onClick={() => { setDataMode('simulated'); setExcludedChannelIds(new Set()); }}
+                            onClick={() => { setDataMode('simulated'); setExcludedChannelIds(new Set()); setConfig(c => ({ ...c, sampleRate: SIMULATED_SAMPLE_RATE })); }}
                             className={`flex-1 py-1.5 text-xs font-medium rounded transition-all ${dataMode === 'simulated' ? 'bg-gray-700 text-white shadow' : 'text-gray-400 hover:text-gray-200'}`}
                           >
                             Simulated
@@ -211,6 +266,44 @@ const App: React.FC = () => {
                              </button>
                           ))}
                         </div>
+                      </div>
+
+                      <div>
+                        <div className="flex justify-between items-center mb-2">
+                          <label className="block text-xs font-medium text-gray-400 uppercase">Band-pass Filter</label>
+                          <button
+                            onClick={() => setConfig({ ...config, bandpassEnabled: !config.bandpassEnabled })}
+                            className={`text-[10px] px-2 py-0.5 rounded border transition-colors ${
+                              config.bandpassEnabled
+                                ? 'bg-blue-600 border-blue-500 text-white'
+                                : 'bg-gray-900 border-gray-700 text-gray-400 hover:border-gray-500'
+                            }`}
+                          >
+                            {config.bandpassEnabled ? 'On' : 'Off'}
+                          </button>
+                        </div>
+                        <div className={`grid grid-cols-3 gap-2 ${config.bandpassEnabled ? '' : 'opacity-40 pointer-events-none'}`}>
+                          {BANDPASS_PRESETS.map(({ label, range }) => {
+                            const active = config.bandpass[0] === range[0] && config.bandpass[1] === range[1];
+                            return (
+                              <button
+                                key={label}
+                                onClick={() => setConfig({ ...config, bandpass: range, bandpassEnabled: true })}
+                                className={`py-1.5 px-1 rounded text-[11px] font-medium border transition-colors ${
+                                  active && config.bandpassEnabled
+                                    ? 'bg-blue-600 border-blue-500 text-white'
+                                    : 'bg-gray-900 border-gray-700 text-gray-400 hover:border-gray-500'
+                                }`}
+                                title={`${range[0]}–${range[1]} Hz`}
+                              >
+                                {label.split(' ')[0]}
+                              </button>
+                            );
+                          })}
+                        </div>
+                        <p className="mt-1 text-[10px] text-gray-500">
+                          {config.bandpassEnabled ? `${config.bandpass[0]}–${config.bandpass[1]} Hz` : 'Full bandwidth'}
+                        </p>
                       </div>
 
                       <div>
@@ -324,33 +417,32 @@ const App: React.FC = () => {
              </div>
              <div className="bg-gray-800 rounded-xl p-6 border border-gray-700">
                <h3 className="text-lg font-semibold text-gray-200 mb-4">Extracted Features</h3>
-               <div className="space-y-4">
-                 <div className="bg-gray-900/50 p-4 rounded-lg border border-gray-800">
-                   <div className="flex justify-between items-center mb-2">
-                     <span className="text-sm font-medium text-yellow-500">Alpha Band (8-13Hz)</span>
-                     <span className="text-xs bg-gray-700 px-2 py-0.5 rounded text-gray-300">
-                        {dataMode === 'simulated' ? 'Strong' : 'Analysis Ready'}
-                     </span>
-                   </div>
-                   <div className="w-full bg-gray-700 h-2 rounded-full overflow-hidden">
-                     <div className="bg-yellow-500 h-full w-[60%]"></div>
-                   </div>
-                 </div>
-
-                 <div className="bg-gray-900/50 p-4 rounded-lg border border-gray-800">
-                   <div className="flex justify-between items-center mb-2">
-                     <span className="text-sm font-medium text-red-400">High Gamma (70-150Hz)</span>
-                     <span className="text-xs bg-gray-700 px-2 py-0.5 rounded text-gray-300">
-                       {dataMode === 'simulated' ? 'Intermittent' : 'Calculating...'}
-                     </span>
-                   </div>
-                   <div className="w-full bg-gray-700 h-2 rounded-full overflow-hidden">
-                     <div className="bg-red-500 h-full w-[30%]"></div>
-                   </div>
-                 </div>
+               <p className="text-xs text-gray-500 mb-4">Relative band power (% of total spectral power)</p>
+               <div className="space-y-3">
+                 {bandPower.length > 0 ? bandPower.map(({ band, range, relative }) => {
+                   const style = BAND_STYLES[band] ?? { text: 'text-gray-300', bar: '#9ca3af' };
+                   const pct = relative * 100;
+                   return (
+                     <div key={band} className="bg-gray-900/50 p-3 rounded-lg border border-gray-800">
+                       <div className="flex justify-between items-center mb-1.5">
+                         <span className={`text-sm font-medium ${style.text}`}>
+                           {BAND_LABELS[band] ?? band} <span className="text-gray-500 text-xs">({range[0]}–{range[1]}Hz)</span>
+                         </span>
+                         <span className="text-xs bg-gray-700 px-2 py-0.5 rounded text-gray-300 font-mono">
+                           {pct.toFixed(1)}%
+                         </span>
+                       </div>
+                       <div className="w-full bg-gray-700 h-2 rounded-full overflow-hidden">
+                         <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, backgroundColor: style.bar }}></div>
+                       </div>
+                     </div>
+                   );
+                 }) : (
+                   <p className="text-sm text-gray-500">No spectral data. Load a signal to extract band power.</p>
+                 )}
                </div>
                <p className="mt-6 text-xs text-gray-500 italic">
-                 * Feature extraction metrics are estimated from the first active channel ({activeData[0]?.label}).
+                 * Computed via Welch PSD on the representative channel ({targetChannel?.label ?? 'n/a'}) at {config.sampleRate} Hz.
                </p>
              </div>
           </div>
@@ -360,7 +452,7 @@ const App: React.FC = () => {
         return (
           <div className="grid grid-cols-1 gap-6 pb-6">
             <div className="h-[350px]">
-              <SpectrogramViewer />
+              <SpectrogramViewer data={targetChannel?.data ?? []} sampleRate={config.sampleRate} />
             </div>
             
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">

@@ -1,5 +1,5 @@
 
-import React, { useMemo } from 'react';
+import React from 'react';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { PSDPoint } from '../types';
 
@@ -8,23 +8,10 @@ interface PSDViewerProps {
   notchFreq: 0 | 50 | 60;
 }
 
+// The PSD is computed from the already-filtered time series (see App.tsx
+// processedData), so any enabled notch/band-pass is reflected directly in the
+// data. The notchFreq prop is used only to label the status badge.
 const PSDViewer: React.FC<PSDViewerProps> = ({ data, notchFreq }) => {
-  
-  // Apply visual notch if enabled (simulated visual effect on the calculated PSD)
-  // In a real Digital Filter, this happens on time-series. Here we visualize the spectral effect.
-  const displayData = useMemo(() => {
-    return data.map(pt => {
-      let power = pt.power;
-      if (notchFreq > 0) {
-        // Attenuate heavily around the notch frequency (+- 2Hz)
-        if (pt.frequency >= notchFreq - 2 && pt.frequency <= notchFreq + 2) {
-          power = power * 0.05; // Strong attenuation
-        }
-      }
-      return { ...pt, power };
-    });
-  }, [data, notchFreq]);
-
   return (
     <div className="bg-gray-900 border border-gray-800 rounded-lg p-4 shadow-lg h-full flex flex-col">
       <div className="flex justify-between items-center mb-4">
@@ -36,7 +23,7 @@ const PSDViewer: React.FC<PSDViewerProps> = ({ data, notchFreq }) => {
 
       <div className="flex-1 min-h-[300px]">
         <ResponsiveContainer width="100%" height="100%">
-          <AreaChart data={displayData} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
+          <AreaChart data={data} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
             <defs>
               <linearGradient id="colorPower" x1="0" y1="0" x2="0" y2="1">
                 <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.8}/>

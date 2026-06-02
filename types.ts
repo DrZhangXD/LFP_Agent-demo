@@ -8,7 +8,8 @@ export enum AnalysisStep {
 export enum ReferenceMethod {
   MONOPOLAR = 'Monopolar',
   BIPOLAR = 'Bipolar',
-  LAPLACIAN = 'Laplacian (CAR)'
+  CAR = 'Common Average (CAR)',
+  LAPLACIAN = 'Laplacian'
 }
 
 export interface ChannelData {
@@ -16,12 +17,14 @@ export interface ChannelData {
   label: string;
   data: number[]; // Time series voltage
   isBad: boolean;
+  sampleRate?: number; // Hz; set when known (e.g. parsed from an EDF file)
 }
 
 export interface SignalConfig {
   sampleRate: number;
   notchFilter: 0 | 50 | 60; // 0 is disabled
   bandpass: [number, number];
+  bandpassEnabled: boolean;
   reference: ReferenceMethod;
 }
 
