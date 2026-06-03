@@ -32,6 +32,11 @@ jobs:
         env:
           GITHUB_PAGES: 'true'
       - uses: actions/configure-pages@v5
+        # enablement: true turns on GitHub Pages (build type: GitHub Actions)
+        # on the first run via the API, so no manual Settings -> Pages step is
+        # required. Needs the `pages: write` permission granted above.
+        with:
+          enablement: true
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist
