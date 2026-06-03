@@ -2,10 +2,13 @@ import path from 'path';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
-// GitHub Pages serves project sites under /<repo>/. The Pages deploy workflow
-// sets GITHUB_PAGES=true; every other target (local dev, preview, Netlify,
-// Vercel) builds against the root path.
-const base = process.env.GITHUB_PAGES === 'true' ? '/lfp_agent-demo/' : '/';
+// For GitHub Pages the deploy workflow sets GITHUB_PAGES=true and we use a
+// relative base ('./') so assets resolve correctly no matter what path/casing
+// the project site is served under (the repo name 'LFP_Agent-demo' is
+// mixed-case, and an absolute base must match it exactly). The app has no
+// client-side router, so a relative base is safe. Other targets (local dev,
+// preview, Netlify, Vercel) build against the root path.
+const base = process.env.GITHUB_PAGES === 'true' ? './' : '/';
 
 export default defineConfig({
   base,
