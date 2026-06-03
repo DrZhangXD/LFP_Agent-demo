@@ -5,6 +5,8 @@ BCI and epilepsy research, with an AI Analyst chat assistant. Built with React 1
 TypeScript, Recharts, and an HTML canvas — everything runs client-side, no backend
 required.
 
+**Live demo:** https://drzhangxd.github.io/LFP_Agent-demo/
+
 ## Features
 
 - **Data sources** — synthetic LFP generator (hippocampal theta, motor beta, gamma bursts,
@@ -61,11 +63,12 @@ types.ts                 Shared types
 
 CI (`.github/workflows/ci.yml`) runs typecheck + lint + tests + build on every push/PR.
 
-`.github/workflows/deploy.yml` builds and publishes `dist/` to GitHub Pages on pushes to
-`main`. To enable it: in the repo, **Settings → Pages → Build and deployment → Source:
-GitHub Actions**. The Pages build sets `GITHUB_PAGES=true`, which makes Vite use the
-`/lfp_agent-demo/` base path (see `vite.config.ts`); if you rename the repository, update
-that base path to match.
+`.github/workflows/deploy.yml` builds and publishes `dist/` to GitHub Pages on every push
+to `main` (already enabled via **Settings → Pages → Build and deployment → Source: GitHub
+Actions**). The Pages build sets `GITHUB_PAGES=true`, which makes Vite emit a **relative
+base** (`./`, see `vite.config.ts`) so the bundled assets resolve correctly under the
+project-site path (`/LFP_Agent-demo/`) regardless of repository-name casing — there's no
+base path to keep in sync if you rename the repo.
 
 Because it's a static SPA, you can also deploy `npm run build` output to Netlify, Vercel,
 or any static host — those build against the root path automatically.
